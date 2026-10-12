@@ -20,6 +20,15 @@
 #include <utility>
 
 namespace fs = std::filesystem;
+
+// Bridge return types need external linkage for Glaze reflection on AppleClang.
+// Keep this aggregate outside the anonymous namespace.
+struct rollover_asset
+{
+    std::string relative;
+    std::string data;
+};
+
 namespace
 {
     constexpr std::string_view alphabet =
@@ -213,16 +222,27 @@ namespace
     // Only the application's generated output names may be written.
     bool allowed_output(std::string_view rel)
     {
-        if (rel == "index.html") return true;
+        if (rel == "index.html" || rel == "slices.css" ||
+            rel == "index-over.html" || rel == "slices-over.css") return true;
         if (!rel.starts_with("image/slice_")) return false;
         rel.remove_prefix(12);
         std::size_t n = 0;
         while (n < rel.size() && rel[n] >= '0' && rel[n] <= '9') ++n;
         return n >= 2 && (rel.substr(n) == ".png" || rel.substr(n) == "_hover.png");
     }
+    bool allowed_rollover(std::string_view rel)
+    {
+        if (rel.starts_with("image/slice_")) rel.remove_prefix(12);
+        else if (rel.starts_with("image/slice")) rel.remove_prefix(11);
+        else return false;
+        std::size_t n = 0;
+        while (n < rel.size() && rel[n] >= '0' && rel[n] <= '9') ++n;
+        return n >= 2 && rel.substr(n) == "_over.jpg";
+    }
     fs::path safe_join(const fs::path& root, std::string_view rel)
     {
-        if (!allowed_output(rel)) throw std::runtime_error("Illegal output filename");
+        if (!allowed_output(rel) && !allowed_rollover(rel))
+            throw std::runtime_error("Illegal asset filename");
         const auto base = fs::weakly_canonical(root);
         auto path = base;
         for (const auto& part : from_utf8(rel))
@@ -253,12 +273,37 @@ namespace
         }
         catch (const std::exception& e) { return std::unexpected(std::string{e.what()}); }
     }
+    std::expected<rollover_asset, std::string> read_rollover(const std::string& dir, int number)
+    {
+        try
+        {
+            if (dir.empty() || number < 1 || number > 1000)
+                return std::unexpected("Invalid rollover request");
+            auto n = std::to_string(number);
+            if (n.size() < 2) n.insert(0, "0");
+            const auto canonical = "image/slice_" + n + "_over.jpg";
+            const auto compact = "image/slice" + n + "_over.jpg";
+            const auto root = expand(dir);
+            const auto a = safe_join(root, canonical), b = safe_join(root, compact);
+            const bool has_a = fs::is_regular_file(a), has_b = fs::is_regular_file(b);
+            if (has_a && has_b)
+                return std::unexpected("Ambiguous rollover: keep only " + canonical + " or " + compact);
+            if (!has_a && !has_b)
+                return std::unexpected("Missing rollover: place " + canonical + " (or " + compact + ") in the export folder");
+            auto data = read_image(to_utf8(has_a ? a : b));
+            if (!data) return std::unexpected(data.error());
+            return rollover_asset{has_a ? canonical : compact, std::move(*data)};
+        }
+        catch (const std::exception& e) { return std::unexpected(std::string{e.what()}); }
+    }
     std::expected<void, std::string> save_file(
         const std::string& dir, const std::string& rel, const std::string& b64)
     {
         try
         {
             if (dir.empty()) return std::unexpected("Empty export folder");
+            // External Photoshop artwork is read-only; never overwrite it.
+            if (!allowed_output(rel)) return std::unexpected("Illegal output filename");
             auto bytes = base64_decode(b64);
             if (!bytes) return std::unexpected(bytes.error());
             const auto target = safe_join(expand(dir), rel);
@@ -272,14 +317,18 @@ namespace
         }
         catch (const std::exception& e) { return std::unexpected(std::string{e.what()}); }
     }
-    std::expected<bool, std::string> export_exists(const std::string& dir, int count)
+    std::expected<bool, std::string> export_exists(const std::string& dir, int count, bool external = false)
     {
         try
         {
             if (dir.empty() || count < 1 || count > 1000)
                 return std::unexpected("Invalid export request");
             const auto root = expand(dir);
-            bool exists = fs::exists(safe_join(root, "index.html"));
+            bool exists = fs::exists(safe_join(root, "index.html")) ||
+                          fs::exists(safe_join(root, "slices.css"));
+            if (external)
+                exists = fs::exists(safe_join(root, "index-over.html")) ||
+                         fs::exists(safe_join(root, "slices-over.css")) || exists;
             for (int i = 1; i <= count; ++i)
             {
                 auto n = std::to_string(i);
@@ -339,7 +388,10 @@ dialog::backdrop{background:#000a}
 <label id="rowAmt"><span id="amtName"></span>: <b id="amtVal"></b><input id="fxAmt" type="range"></label>
 <label id="rowColor">Color <input id="fxColor" type="color"></label>
 <label id="rowMs">Transition (ms)<input id="fxMs" type="number" min="0" max="5000" step="50"></label>
-<div id="rowSwap"><label>Hover image (stretched to slice size)</label><div class="grp"><button id="swapBtn">Choose…</button><button id="swapClear">Remove</button></div><img id="swapThumb" alt="Hover image" hidden></div>
+<div id="rowSwap"><label>Hover image (chosen images are stretched to slice size)</label>
+<label class="chk"><input id="useOver" type="checkbox"> Use Photoshop *_over.jpg file</label>
+<p id="overHint" class="muted" hidden></p>
+<div class="grp"><button id="swapBtn">Choose…</button><button id="swapClear">Remove</button></div><img id="swapThumb" alt="Hover image" hidden></div>
 </div></aside></main><footer><span id="status" role="status"></span><span id="coords"></span></footer>
 <div id="pv" hidden><button id="pvClose">Close preview (Esc)</button><iframe id="pvf" title="Slice preview" sandbox></iframe></div>
 <dialog id="confirm"><p id="confirmText"></p><div class="grp"><button id="confirmYes">Continue</button><button id="confirmNo">Cancel</button></div></dialog>
@@ -358,7 +410,7 @@ const FX={none:{label:'None'},brighten:{label:'Brighten',name:'Strength',def:25,
  overlay:{label:'Color overlay',name:'Opacity',def:35,min:0,max:100,unit:'%',color:true},
  outline:{label:'Highlight border',name:'Width',def:4,min:1,max:30,unit:'px',color:true},
  swap:{label:'Swap image on hover',swap:true}};
-const defFx=()=>({type:'none',amount:25,color:'#ffcc00',ms:200,swap:null});
+const defFx=()=>({type:'none',amount:25,color:'#ffcc00',ms:200,swap:null,external:false});
 const S={img:null,W:0,H:0,pieces:[],sel:null,tool:'slice',m:null,nextId:1,hist:[],snap:[],busy:false};
 const V={s:1,ox:0,oy:0},cv=$('#cv'),ctx=cv.getContext('2d'),stage=$('#stage');
 let dpr=1,sliceDrag=null,panDrag=null;
@@ -486,7 +538,9 @@ function updateUi(){
  for(const id of ['open','loadPath','browse','path','outDir','resp'])$('#'+id).disabled=S.busy;
  for(const id of ['tSlice','tSelect','reset','fitBtn','previewBtn','exportBtn'])$('#'+id).disabled=S.busy||!S.img;
  $('#undo').disabled=S.busy||!S.hist.length;
- $('#form').querySelectorAll('input,select,button').forEach(e=>e.disabled=S.busy);setCursor();
+ $('#form').querySelectorAll('input,select,button').forEach(e=>e.disabled=S.busy);
+ for(const id of ['swapBtn','swapClear'])$('#'+id).disabled=S.busy||!!cur()?.fx.external;
+ setCursor();
 }
 for(const [k,m] of Object.entries(FX))$('#fxType').add(new Option(m.label,k));
 function refreshPanel(){
@@ -495,7 +549,11 @@ function refreshPanel(){
  $('#url').value=p.url;$('#newTab').checked=p.newTab;$('#fxType').value=f.type;$('#rowAmt').hidden=m.min===undefined;
  if(m.min!==undefined){const r=$('#fxAmt');$('#amtName').textContent=m.name;r.min=m.min;r.max=m.max;r.value=f.amount;$('#amtVal').textContent=f.amount+m.unit;}
  $('#rowColor').hidden=!m.color;$('#fxColor').value=f.color;$('#rowMs').hidden=f.type==='none';$('#fxMs').value=f.ms;
- $('#rowSwap').hidden=!m.swap;$('#swapThumb').hidden=!f.swap;if(f.swap)$('#swapThumb').src=f.swap;else $('#swapThumb').removeAttribute('src');
+ $('#rowSwap').hidden=!m.swap;$('#useOver').checked=!!f.external;$('#overHint').hidden=!f.external;
+ const n=order().indexOf(p)+1,digits=String(n).padStart(2,'0');
+ $('#overHint').textContent=`Reads image/slice_${digits}_over.jpg (or slice${digits}_over.jpg) from the export folder. Must be ${p.w}×${p.h}px. Exports index-over.html + slices-over.css. Finish slicing before editing numbered files.`;
+ $('#swapThumb').hidden=!!f.external||!f.swap;if(f.swap&&!f.external)$('#swapThumb').src=f.swap;else $('#swapThumb').removeAttribute('src');
+ for(const id of ['swapBtn','swapClear'])$('#'+id).disabled=S.busy||!!f.external;
 }
 bind('#url','input',()=>{const p=cur();if(p&&!S.busy){p.url=$('#url').value;draw();}});bind('#url','change',commit);
 bind('#newTab','change',()=>{const p=cur();if(p&&!S.busy){p.newTab=$('#newTab').checked;commit();}});
@@ -503,8 +561,9 @@ bind('#fxType','change',()=>{const p=cur();if(!p||S.busy)return;p.fx.type=$('#fx
 bind('#fxAmt','input',()=>{const p=cur();if(p&&!S.busy){p.fx.amount=+$('#fxAmt').value;$('#amtVal').textContent=p.fx.amount+FX[p.fx.type].unit;}});bind('#fxAmt','change',commit);
 bind('#fxColor','input',()=>{const p=cur();if(p&&!S.busy)p.fx.color=$('#fxColor').value;});bind('#fxColor','change',commit);
 bind('#fxMs','change',()=>{const p=cur();if(p&&!S.busy){p.fx.ms=clamp(Number($('#fxMs').value)||0,0,5000);$('#fxMs').value=p.fx.ms;commit();}});
-bind('#swapBtn','click',()=>runBusy(async()=>{const p=cur();if(!p)return;const path=await call('pick_image');if(!path)return;const src=await call('read_image',path);validateImage(await loadImg(src));p.fx.swap=src;commit();status('Hover image loaded');}));
-bind('#swapClear','click',()=>{const p=cur();if(p&&!S.busy){p.fx.swap=null;commit();refreshPanel();}});
+bind('#useOver','change',()=>{const p=cur();if(!p||S.busy)return;p.fx.external=$('#useOver').checked;commit();refreshPanel();draw();});
+bind('#swapBtn','click',()=>runBusy(async()=>{const p=cur();if(!p||p.fx.external)return;const path=await call('pick_image');if(!path)return;const src=await call('read_image',path);validateImage(await loadImg(src));p.fx.swap=src;commit();status('Hover image loaded');}));
+bind('#swapClear','click',()=>{const p=cur();if(p&&!S.busy&&!p.fx.external){p.fx.swap=null;commit();refreshPanel();}});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const nm=n=>`slice_${String(n).padStart(2,'0')}`;
 // Allow relative links and ordinary web/mail/phone links, not script/data schemes.
@@ -526,7 +585,7 @@ function layout(ord){
  });
  if(grid.some(row=>row.includes(-1)))throw new Error('Uncovered image region');return {xs,ys,rows,cols,grid,spans};
 }
-function effectCss(p,n){
+function effectCss(p,n,hasHover=!!p.fx.swap||!!p.fx.external){
  const f=p.fx,a=Number(f.amount),t=clamp(Number(f.ms)||0,0,5000),c='.s'+n;
  const img=`${c}:hover .main,${c}:focus-visible .main`;
  switch(f.type){
@@ -537,22 +596,24 @@ function effectCss(p,n){
  case 'zoom':return `${c} .main{transition:transform ${t}ms}${img}{transform:scale(${1+a/100})}`;
  case 'overlay':return `${c}::after{content:"";position:absolute;inset:0;background:${f.color};opacity:0;transition:opacity ${t}ms;pointer-events:none}${c}:hover::after,${c}:focus-visible::after{opacity:${a/100}}`;
  case 'outline':return `${c}::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 ${a}px ${f.color};opacity:0;transition:opacity ${t}ms;pointer-events:none}${c}:hover::after,${c}:focus-visible::after{opacity:1}`;
- case 'swap':return f.swap?`${c} .h{position:absolute;inset:0;opacity:0;transition:opacity ${t}ms}${c}:hover .h,${c}:focus-visible .h{opacity:1}`:'';
+ case 'swap':return hasHover?`${c} .h{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity ${t}ms}${c}:hover .h,${c}:focus-visible .h{opacity:1}`:'';
  default:return '';
  }
 }
-function buildHtml(ord,srcs,{preview,responsive},g=layout(ord)){
- const {xs,ys,rows,cols,grid,spans}=g;
- // Zero-height cells contain absolutely positioned images. Explicit row heights
- // preserve a pixel-exact table with row/col spans and avoid intrinsic image sizing.
- // Responsive mode uniformly scales the entire table rather than distorting cells.
+function buildCss(ord,srcs,responsive){
  let css=`html,body{margin:0;padding:0}body{background:white}.frame{position:relative;${responsive?'width:100%;max-width:'+S.W+'px;aspect-ratio:'+S.W+'/'+S.H+';':'width:'+S.W+'px;height:'+S.H+'px;'}}
  table{position:absolute;inset:0;width:100%;height:100%;table-layout:fixed;border-collapse:collapse;border-spacing:0}
  td{padding:0;border:0;position:relative;line-height:0}.s{position:absolute;inset:0;display:block;overflow:hidden;outline-offset:-2px}
  img{display:block;position:absolute;inset:0;width:100%;height:100%;border:0;user-select:none;-webkit-user-drag:none}.s:focus-visible{outline:2px solid #4da3ff;z-index:1}
  `;
- css+=ord.map((p,i)=>effectCss(p,i+1)).join('\n');
+ css+=ord.map((p,i)=>effectCss(p,i+1,!!srcs[i].hover)).join('\n');
  css+='\n@media(prefers-reduced-motion:reduce){*,*::after{transition:none!important}}';
+ return css+'\n';
+}
+function buildHtml(ord,srcs,{preview,responsive,stylesheet=null},g=layout(ord)){
+ const {xs,ys,rows,cols,grid,spans}=g;
+ // Explicit row heights and column widths preserve span-based table geometry.
+ const headStyle=stylesheet?`<link rel="stylesheet" href="${esc(stylesheet)}">`:`<style>${buildCss(ord,srcs,responsive)}</style>`;
  let table='<div class="frame"><table role="presentation"><colgroup>';
  for(let c=0;c<cols;c++)table+=`<col style="width:${(xs[c+1]-xs[c])/S.W*100}%">`;
  table+='</colgroup>\n<tbody>\n';
@@ -561,38 +622,71 @@ function buildHtml(ord,srcs,{preview,responsive},g=layout(ord)){
   for(let c=0;c<cols;c++){
    const i=grid[r][c],sp=spans[i];if(r!==sp.r1||c!==sp.c1)continue;
    const p=ord[i],url=safeUrl(p.url),tag=url?'a':'div';
-   const attrs=url?(preview?` href="#" title="${esc(url)}"`:` href="${esc(url)}"${p.newTab?' target="_blank" rel="noopener noreferrer"':''}`):'';
-   table+=`<td rowspan="${sp.r2-sp.r1}" colspan="${sp.c2-sp.c1}"><${tag} class="s s${i+1}"${attrs}><img class="main" src="${esc(srcs[i].main)}" alt="${url?'Slice '+(i+1):''}">${srcs[i].hover?`<img class="h" src="${esc(srcs[i].hover)}" alt="">`:''}</${tag}></td>`;
+   const attrs=url?(preview?` href="#" title="${esc(url)}"`:` href="${esc(url)}"${p.newTab?' target="_blank" rel="noopener noreferrer"':''}`):(srcs[i].hover?` tabindex="0" aria-label="Slice ${i+1}"`:'');
+   table+=`<td rowspan="${sp.r2-sp.r1}" colspan="${sp.c2-sp.c1}"><${tag} class="s s${i+1}"${attrs}><img class="main" src="${esc(srcs[i].main)}" alt="${url?'Slice '+(i+1):''}">${srcs[i].hover?`<img class="h" src="${esc(srcs[i].hover)}" alt="" aria-hidden="true">`:''}</${tag}></td>`;
   }
   table+='</tr>\n';
  }
  table+='</tbody></table></div>';
- return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sliced Image</title><style>${css}</style></head><body>${table}</body></html>\n`;
+ return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sliced Image</title>${headStyle}</head><body>${table}</body></html>\n`;
 }
 const b64of=u=>u.slice(u.indexOf(',')+1);
 function utf8b64(s){const b=new TextEncoder().encode(s);let bin='';for(let i=0;i<b.length;i+=0x8000)bin+=String.fromCharCode(...b.subarray(i,i+0x8000));return btoa(bin);}
 const save=(dir,rel,b64)=>call('save_file',dir,rel,b64);
+const externalSwap=p=>p.fx.type==='swap'&&!!p.fx.external;
+async function resolveRollovers(ord,dir,keepData){
+ const assets=new Map();
+ for(let i=0;i<ord.length;i++){
+  const p=ord[i];if(!externalSwap(p))continue;
+  status(`Checking Photoshop rollover for slice ${i+1}…`);
+  try{
+   const asset=await call('read_rollover',dir,i+1),im=validateImage(await loadImg(asset.data));
+   if(im.naturalWidth!==p.w||im.naturalHeight!==p.h)
+    throw new Error(`${asset.relative} is ${im.naturalWidth}×${im.naturalHeight}px; expected ${p.w}×${p.h}px. Keep the Photoshop canvas at the original slice size.`);
+   assets.set(i,{relative:asset.relative,data:keepData?asset.data:null});
+  }catch(e){throw new Error(`Slice #${i+1}: ${e.message||e}`);}
+ }
+ return assets;
+}
 async function doExport(){
  if(!S.img)return;const entered=$('#outDir').value.trim();if(!entered)throw new Error('Enter an export folder first');
  const dir=await call('normalize_path',entered);$('#outDir').value=dir;
- const ord=order(),g=layout(ord),srcs=[];
- if(await call('export_exists',dir,ord.length)&&!await ask('Generated files already exist in this folder. Overwrite matching files? Unrelated and obsolete files will be left untouched.'))return;
+ const ord=order(),g=layout(ord),srcs=[],useExternal=ord.some(externalSwap);
+ // Validate all external art before writing anything; the original JPEGs stay untouched.
+ const rollovers=useExternal?await resolveRollovers(ord,dir,false):new Map();
+ if(await call('export_exists',dir,ord.length,useExternal)&&!await ask('Generated files already exist in this folder. Overwrite matching HTML/CSS and generated PNG files? Photoshop *_over.jpg artwork and unrelated files will be left untouched.'))return;
  try{
   for(let i=0;i<ord.length;i++){
    const p=ord[i],n=i+1;status(`Exporting slice ${n}/${ord.length}…`);
    await save(dir,`image/${nm(n)}.png`,b64of(sliceDataURL(p)));
-   const hover=p.fx.type==='swap'&&p.fx.swap;
+   const hover=p.fx.type==='swap'&&!externalSwap(p)&&p.fx.swap;
    if(hover)await save(dir,`image/${nm(n)}_hover.png`,b64of(await swapDataURL(p)));
    srcs.push({main:`image/${nm(n)}.png`,hover:hover?`image/${nm(n)}_hover.png`:null});
   }
-  await save(dir,'index.html',utf8b64(buildHtml(ord,srcs,{preview:false,responsive:$('#resp').checked},g)));
-  status(`Done: ${ord.length} slices + index.html written to ${dir}`);
+  const responsive=$('#resp').checked;
+  await save(dir,'slices.css',utf8b64(buildCss(ord,srcs,responsive)));
+  await save(dir,'index.html',utf8b64(buildHtml(ord,srcs,{preview:false,responsive,stylesheet:'slices.css'},g)));
+  if(useExternal){
+   const overSrcs=srcs.map((s,i)=>({...s,hover:rollovers.has(i)?rollovers.get(i).relative:s.hover}));
+   await save(dir,'slices-over.css',utf8b64(buildCss(ord,overSrcs,responsive)));
+   await save(dir,'index-over.html',utf8b64(buildHtml(ord,overSrcs,{preview:false,responsive,stylesheet:'slices-over.css'},g)));
+  }
+  status(`Done: ${ord.length} slices + index.html / slices.css${useExternal?' + index-over.html / slices-over.css':''} written to ${dir}. Photoshop artwork was not modified.`);
  }catch(e){throw new Error('Export failed; some files may have been written. '+(e.message||e));}
 }
 async function preview(){
- if(!S.img)return;const ord=order(),g=layout(ord),srcs=[];status('Building preview…');
- for(const p of ord)srcs.push({main:sliceDataURL(p),hover:p.fx.type==='swap'&&p.fx.swap?await swapDataURL(p):null});
- $('#pvf').srcdoc=buildHtml(ord,srcs,{preview:true,responsive:$('#resp').checked},g);$('#pv').hidden=false;status('Preview: links do not navigate');
+ if(!S.img)return;const ord=order(),g=layout(ord),srcs=[],useExternal=ord.some(externalSwap);status('Building preview…');
+ let rollovers=new Map();
+ if(useExternal){
+  const entered=$('#outDir').value.trim();if(!entered)throw new Error('Choose the export folder containing Photoshop *_over.jpg files before previewing');
+  const dir=await call('normalize_path',entered);$('#outDir').value=dir;rollovers=await resolveRollovers(ord,dir,true);
+ }
+ for(let i=0;i<ord.length;i++){
+  const p=ord[i],asset=rollovers.get(i);
+  srcs.push({main:sliceDataURL(p),hover:asset?asset.data:p.fx.type==='swap'&&p.fx.swap?await swapDataURL(p):null});
+ }
+ // srcdoc uses inline CSS and data URLs; no file URL access or scripts are needed.
+ $('#pvf').srcdoc=buildHtml(ord,srcs,{preview:true,responsive:$('#resp').checked},g);$('#pv').hidden=false;status(`Preview${useExternal?' (Photoshop rollover version)':''}: links do not navigate`);
 }
 function closePreview(){$('#pv').hidden=true;$('#pvf').srcdoc='';}
 async function loadPath(path){const normalized=await call('normalize_path',path);$('#path').value=normalized;await setImage(await call('read_image',normalized));}
@@ -629,6 +723,7 @@ coco::stray start(saucer::application* app)
     webview->expose("default_dir", [] { return to_utf8(home_dir() / "saucer-slices"); });
     webview->expose("normalize_path", &normalize_path);
     webview->expose("read_image", &read_image);
+    webview->expose("read_rollover", &read_rollover);
     webview->expose("save_file", &save_file);
     webview->expose("export_exists", &export_exists);
     webview->expose("pick_image", [&]() -> std::expected<std::string, std::string> {
