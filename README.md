@@ -1,19 +1,19 @@
 # Image Slicer — saucer + C++23
 
 ✨ Key Features
-Interactive Drag & Drop Slicing: Easily carve out custom rectangular slices directly on the canvas.
+-Interactive Drag & Drop Slicing: Easily carve out custom rectangular slices directly on the canvas.
 
-Rich Mouse-over Effects: Assign advanced hover animations per slice:
+-Rich Mouse-over Effects: Assign advanced hover animations per slice:
 
-Zoom in, Brighten, Darken, Grayscale, Fade out
+-Zoom in, Brighten, Darken, Grayscale, Fade out
 
-Color Overlay & Highlight Borders
+-Color Overlay & Highlight Borders
 
-Image Swap on Hover
+-Image Swap on Hover
 
-HTML Table Export: Generates clean, zero-gap HTML tables (index.html) using row/column span math alongside an organized image/ folder containing your sliced assets.
+-HTML Table Export: Generates clean, zero-gap HTML tables (index.html) using row/column span math alongside an organized image/ folder containing your sliced assets.
 
-Responsive & Fixed Layouts: Toggle between fixed pixel dimensions and responsive width scaling for modern web deployment.
+-Responsive & Fixed Layouts: Toggle between fixed pixel dimensions and responsive width scaling for modern web deployment.
 
 ## Build
 
