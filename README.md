@@ -1,29 +1,19 @@
 # Image Slicer — saucer + C++23
 
-Complete single-file application: `slicer.cpp`.
-Pinned dependencies: saucer 7.0.2 and saucer-desktop 4.2.0.
+✨ Key Features
+Interactive Drag & Drop Slicing: Easily carve out custom rectangular slices directly on the canvas.
 
-## Native dialog file-URL fix
+Rich Mouse-over Effects: Assign advanced hover animations per slice:
 
-The macOS desktop backend returns file URLs instead of ordinary filesystem paths.
-This version normalizes picker results before showing them in the UI, reading
-images, or exporting. The native helpers also accept file URLs directly for
-manually entered paths and export folders.
+Zoom in, Brighten, Darken, Grayscale, Fade out
 
-For example, `file:///Users/name/My%20Images/ui.png` becomes
-`/Users/name/My Images/ui.png`. Local `file://localhost/...` and `file:/...` forms
-are also accepted. Percent escapes are decoded only in URLs; literal `%` and `+`
-in ordinary filenames are preserved. Malformed escapes, NUL bytes, remote file
-URL hosts, and URL query/fragment components are rejected.
+Color Overlay & Highlight Borders
 
-Both the source image path and export-folder field display normalized absolute
-filesystem paths. Export no longer interprets `file:` as a relative folder name.
-The accidentally created `file:` folder from an older version is left untouched;
-inspect it before manually moving or removing its contents.
+Image Swap on Hover
 
-To update an already-working project, replace its `slicer.cpp` with this version
-and rebuild its existing build directory. The CMake file retains the successful
-Glaze pin and include-order fix.
+HTML Table Export: Generates clean, zero-gap HTML tables (index.html) using row/column span math alongside an organized image/ folder containing your sliced assets.
+
+Responsive & Fixed Layouts: Toggle between fixed pixel dimensions and responsive width scaling for modern web deployment.
 
 ## Build
 
