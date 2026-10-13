@@ -15,7 +15,7 @@
 
 - Responsive & Fixed Layouts: Toggle between fixed pixel dimensions and responsive width scaling for modern web deployment.
 
-![image](https://github.com/24958202/slicer/images/screenshot.jpg)
+![image](https://github.com/24958202/slicer/blob/main/images/screenshot.jpg)
 
 ## Build
 
