@@ -15,6 +15,8 @@
 
 - Responsive & Fixed Layouts: Toggle between fixed pixel dimensions and responsive width scaling for modern web deployment.
 
+![image](https://github.com/24958202/slicer/images/screenshot.jpg)
+
 ## Build
 
 Requires CMake 3.25+, Git, a C++23 compiler and standard library compatible with
